@@ -153,7 +153,12 @@ public class SecurityConfig {
         JwtGenerator jwtGenerator = new JwtGenerator(jwtEncoder);
         OAuth2AccessTokenGenerator accessTokenGenerator = new OAuth2AccessTokenGenerator();
         OAuth2RefreshTokenGenerator refreshTokenGenerator = new OAuth2RefreshTokenGenerator();
-        return new DelegatingOAuth2TokenGenerator(jwtGenerator, accessTokenGenerator, refreshTokenGenerator);
+
+        return new DelegatingOAuth2TokenGenerator(
+                accessTokenGenerator,
+                refreshTokenGenerator,
+                jwtGenerator
+        );
     }
 
     // ========== ✅ JWT CLAIMS CUSTOMIZER (Adds username, roles, user_id, etc.) ==========

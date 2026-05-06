@@ -12,6 +12,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.core.*;
 import org.springframework.security.oauth2.core.endpoint.PkceParameterNames;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.authorization.OAuth2Authorization;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationCode;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
@@ -68,29 +69,34 @@ public class InternalOAuth2TokenService {
 
         log.debug("Authenticating user: {} with PKCE: {}", username, codeChallenge != null ? "yes" : "no");
 
-        // 1. Authenticate user credentials via Spring Security
+        // 1. Authenticate user credentials
         Authentication userAuthentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(username, password)
         );
 
-        // 2. Get or create internal client (configured for AUTHORIZATION_CODE + PKCE)
+        // 2. Get or create internal client
         RegisteredClient client = getOrCreateInternalClient();
 
-        // 3. Parse and validate requested scopes
+        // 3. Parse scopes
         Set<String> authorizedScopes = parseScopes(scope, client.getScopes());
 
-        // 4. Build OAuth2Authorization with AUTHORIZATION_CODE grant (PKCE-compatible)
-        OAuth2Authorization authorization = OAuth2Authorization.withRegisteredClient(client)
+        // 4.  Build authorization with conditional attribute
+        OAuth2Authorization.Builder authBuilder = OAuth2Authorization.withRegisteredClient(client)
                 .id(UUID.randomUUID().toString())
                 .principalName(userAuthentication.getName())
-                .authorizationGrantType(ClientConfig.INTERNAL_LOGIN_GRANT) //  Use custom grant
+                .authorizationGrantType(ClientConfig.INTERNAL_LOGIN_GRANT)
                 .authorizedScopes(authorizedScopes)
                 .attribute(Authentication.class.getName(), userAuthentication)
-                .attribute("internal_flow", true)
-                .attribute("pkce_challenge", codeChallenge) // Optional: for audit
-                .build();
+                .attribute("internal_flow", true);
 
-        // 5. If PKCE challenge provided, generate authorization code with challenge binding (for future use)
+        //  Only add pkce_challenge if it's provided (non-null, non-empty)
+        if (StringUtils.hasText(codeChallenge)) {
+            authBuilder.attribute("pkce_challenge", codeChallenge);
+        }
+
+        OAuth2Authorization authorization = authBuilder.build();
+
+        // 5. Generate authorization code with PKCE (if challenge provided)
         String authorizationCodeValue = null;
         if (StringUtils.hasText(codeChallenge)) {
             validatePkceChallenge(codeChallenge);
@@ -98,31 +104,27 @@ public class InternalOAuth2TokenService {
             log.debug("Generated authorization code with PKCE for user: {}", username);
         }
 
-        // 6. Generate ACCESS TOKEN (custom claims auto-injected via OAuth2TokenCustomizer bean)
+        // 6. Generate tokens
         OAuth2AccessToken accessToken = generateAccessToken(authorization, client, userAuthentication, authorizedScopes);
-
-        // 7. Generate REFRESH TOKEN (with rotation enabled)
         OAuth2RefreshToken refreshToken = generateRefreshToken(authorization, client, userAuthentication, authorizedScopes);
 
-        // 8. Save final authorization with all tokens
-        OAuth2Authorization.Builder authBuilder = OAuth2Authorization.from(authorization)
+        // 7. Save authorization
+        OAuth2Authorization.Builder finalBuilder = OAuth2Authorization.from(authorization)
                 .token(accessToken, metadata -> {})
                 .refreshToken(refreshToken);
 
-        // Optionally store authorization code for audit/traceability
         if (authorizationCodeValue != null) {
             OAuth2AuthorizationCode authCode = new OAuth2AuthorizationCode(
                     authorizationCodeValue,
                     Instant.now(),
-                    Instant.now().plus(Duration.ofMinutes(5)) // Short-lived for security
+                    Instant.now().plus(Duration.ofMinutes(5))
             );
-            authBuilder.token(authCode, metadata -> {});
+            finalBuilder.token(authCode, metadata -> {});
         }
 
-        authorizationService.save(authBuilder.build());
-        log.info("✅ Tokens issued for user: {} (scopes: {})", username, authorizedScopes);
+        authorizationService.save(finalBuilder.build());
+        log.info("Tokens issued for user: {} (scopes: {})", username, authorizedScopes);
 
-        // 9. Build and return response
         return buildTokenResponse(accessToken, refreshToken, userAuthentication, authorizedScopes, authorizationCodeValue);
     }
 
@@ -151,7 +153,6 @@ public class InternalOAuth2TokenService {
             throwOAuth2Error(OAuth2ErrorCodes.INVALID_GRANT, "Authorization context not found");
         }
 
-        // 🔁 Token Rotation: Remove old authorization before issuing new tokens
         authorizationService.remove(authorization);
         log.debug("Rotated refresh token for user: {}", userAuthentication.getName());
 
@@ -172,7 +173,7 @@ public class InternalOAuth2TokenService {
                 .build();
         authorizationService.save(finalAuth);
 
-        log.info("✅ Refreshed tokens for user: {}", userAuthentication.getName());
+        log.info(" Refreshed tokens for user: {}", userAuthentication.getName());
         return buildTokenResponse(newAccessToken, newRefreshToken, userAuthentication, authorization.getAuthorizedScopes(), null);
     }
 
@@ -185,7 +186,7 @@ public class InternalOAuth2TokenService {
             // Auto-heal: Update client if missing required settings
             boolean needsUpdate = !client.getAuthorizationGrantTypes().contains(AuthorizationGrantType.AUTHORIZATION_CODE)
                     || !client.getClientSettings().isRequireProofKey()
-                    || client.getRedirectUris().isEmpty(); // ✅ Also check for empty redirect URIs
+                    || client.getRedirectUris().isEmpty(); // Also check for empty redirect URIs
 
             if (needsUpdate) {
                 log.warn("⚠️ internal-client missing required settings. Updating...");
@@ -195,7 +196,7 @@ public class InternalOAuth2TokenService {
             return client;
         }
 
-        // ✅ Create new client with VALID redirect URI (required for AUTHORIZATION_CODE grant)
+        // Create new client with VALID redirect URI (required for AUTHORIZATION_CODE grant)
         client = RegisteredClient.withId(UUID.randomUUID().toString())
                 .clientId("internal-client")
                 .clientName("Internal PKCE Client")
@@ -220,7 +221,7 @@ public class InternalOAuth2TokenService {
                 .build();
 
         registeredClientRepository.save(client);
-        log.info("✅ Created internal-client with PKCE support and redirect URIs");
+        log.info("Created internal-client with PKCE support and redirect URIs");
         return client;
     }
 
@@ -242,21 +243,7 @@ public class InternalOAuth2TokenService {
 
         return builder.build();
     }
-
-    private OAuth2Authorization buildAuthorization(
-            RegisteredClient client,
-            Authentication principal,
-            Set<String> authorizedScopes) {
-
-        return OAuth2Authorization.withRegisteredClient(client)
-                .id(UUID.randomUUID().toString())
-                .principalName(principal.getName())
-                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-                .authorizedScopes(authorizedScopes)
-                .attribute(Authentication.class.getName(), principal)
-                .attribute("internal_flow", true) // Marker for audit logs
-                .build();
-    }
+    
 
     /**
      * Generate authorization code with PKCE challenge binding.
@@ -276,7 +263,7 @@ public class InternalOAuth2TokenService {
                 Instant.now().plus(Duration.ofMinutes(5)) // Short-lived for security
         );
 
-        // ✅ Store PKCE metadata for future standard flow compatibility
+        //  Store PKCE metadata for future standard flow compatibility
         OAuth2Authorization updated = OAuth2Authorization.from(authorization)
                 .token(authorizationCode, metadata -> {
                     metadata.put(PkceParameterNames.CODE_CHALLENGE, codeChallenge);
@@ -289,12 +276,18 @@ public class InternalOAuth2TokenService {
         authorizationService.save(updated);
         return codeValue;
     }
+    
 
     private OAuth2AccessToken generateAccessToken(
             OAuth2Authorization authorization,
             RegisteredClient client,
             Authentication principal,
             Set<String> authorizedScopes) {
+
+        log.debug("🔍 Generating access token: clientId={}, grantType={}, scopes={}",
+                client.getClientId(),
+                ClientConfig.INTERNAL_LOGIN_GRANT.getValue(),
+                authorizedScopes);
 
         OAuth2TokenContext context = DefaultOAuth2TokenContext.builder()
                 .registeredClient(client)
@@ -306,11 +299,37 @@ public class InternalOAuth2TokenService {
                 .build();
 
         OAuth2Token generated = tokenGenerator.generate(context);
-        if (generated == null || !(generated instanceof OAuth2AccessToken)) {
-            log.error("❌ Failed to generate access token for user: {}", principal.getName());
+
+        if (generated == null) {
+            log.error(" tokenGenerator.generate() returned null");
             throwOAuth2Error(OAuth2ErrorCodes.SERVER_ERROR, "Failed to generate access token");
         }
-        return (OAuth2AccessToken) generated;
+
+        //  Handle both OAuth2AccessToken (expected) and raw Jwt (fallback)
+        if (generated instanceof OAuth2AccessToken accessToken) {
+            log.debug(" Access token generated (wrapped)");
+            return accessToken;
+        }
+        else if (generated instanceof Jwt jwt) {
+            // Fallback: Manually wrap Jwt into OAuth2AccessToken
+            log.debug("️Got raw Jwt, wrapping into OAuth2AccessToken");
+
+            Instant issuedAt = jwt.getIssuedAt() != null ? jwt.getIssuedAt() : Instant.now();
+            Instant expiresAt = jwt.getExpiresAt() != null ? jwt.getExpiresAt() : issuedAt.plus(Duration.ofMinutes(30));
+
+            return new OAuth2AccessToken(
+                    OAuth2AccessToken.TokenType.BEARER,
+                    jwt.getTokenValue(),
+                    issuedAt,
+                    expiresAt,
+                    authorizedScopes //  Scopes are critical for resource server validation
+            );
+        }
+        else {
+            log.error("Unexpected token type: {}", generated.getClass());
+            throwOAuth2Error(OAuth2ErrorCodes.SERVER_ERROR, "Unexpected token type: " + generated.getClass());
+        }
+        throw new IllegalStateException("Unreachable code: token generation failed unexpectedly");
     }
 
     private OAuth2RefreshToken generateRefreshToken(
@@ -329,11 +348,22 @@ public class InternalOAuth2TokenService {
                 .authorization(authorization)
                 .authorizedScopes(authorizedScopes)
                 .tokenType(OAuth2TokenType.REFRESH_TOKEN)
-                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN) // ✅ Standard for refresh
+                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
                 .build();
 
         OAuth2Token generated = tokenGenerator.generate(context);
-        return (generated instanceof OAuth2RefreshToken) ? (OAuth2RefreshToken) generated : null;
+
+        if (generated == null) {
+            log.warn("Refresh token generation returned null (optional)");
+            return null;
+        }
+
+        if (generated instanceof OAuth2RefreshToken refreshToken) {
+            return refreshToken;
+        }
+
+        log.warn("Unexpected refresh token type: {}", generated.getClass());
+        return null;
     }
 
     private Set<String> parseScopes(String requested, Set<String> registered) {

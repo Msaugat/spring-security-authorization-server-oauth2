@@ -31,7 +31,7 @@ public class ClientConfig {
     @Bean
     public ApplicationRunner initializeClients() {
         return args -> {
-            log.info("🚀 Initializing OAuth2 clients...");
+            log.info("Initializing OAuth2 clients...");
 
             // ========== 1. Web Client (Standard OAuth 2.1 Authorization Code + PKCE) ==========
             if (registeredClientRepository.findByClientId("web-client") == null) {
@@ -114,7 +114,7 @@ public class ClientConfig {
                 log.info(" Created internal-client (for /api/auth/login)");
             }
 
-            log.info("🎉 OAuth2 client initialization complete");
+            log.info("OAuth2 client initialization complete");
         };
     }
 }

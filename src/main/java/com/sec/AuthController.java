@@ -42,17 +42,17 @@ public class AuthController {
                     request.scope()
             );
 
-            log.info("✅ Login successful for user: {}", request.username());
+            log.info("Login successful for user: {}", request.username());
             return ResponseEntity.ok(ApiResponse.success(tokens));
 
         } catch (OAuth2AuthenticationException e) {
-            log.warn("⚠️ Auth failed for {}: {}", request.username(), e.getError().getDescription());
+            log.warn(" Auth failed for {}: {}", request.username(), e.getError().getDescription());
             return ResponseEntity.status(401).body(ApiResponse.error(e.getError().getDescription()));
         } catch (IllegalArgumentException e) {
-            log.warn("⚠️ Invalid request: {}", e.getMessage());
+            log.warn(" Invalid request: {}", e);
             return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
         } catch (Exception e) {
-            log.error("❌ Unexpected error during login for {}", request.username(), e);
+            log.error("Unexpected error during login for {}", request.username(), e);
             return ResponseEntity.status(500).body(ApiResponse.error("Authentication failed"));
         }
     }
