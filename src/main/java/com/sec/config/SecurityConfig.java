@@ -5,7 +5,9 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.sec.dto.CustomUserDetails;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,18 +20,18 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
-import org.springframework.security.oauth2.server.authorization.token.JwtGenerator;
-import org.springframework.security.oauth2.server.authorization.token.OAuth2AccessTokenGenerator;
-import org.springframework.security.oauth2.server.authorization.token.OAuth2RefreshTokenGenerator;
-import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenGenerator;
+import org.springframework.security.oauth2.server.authorization.token.*;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
@@ -38,20 +40,26 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Configuration
 @EnableWebSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 
-    private final com.sec.service.MyUserDetailsService myUserDetailsService;
+    // 👇 Change "myUserDetailsService" to match your actual @Service bean name
+    @Qualifier("myUserDetailsService")
+    private final UserDetailsService userDetailsService;
 
-    // ========== CHAIN 1: OAuth 2.1 Authorization Server ==========
+    @Value("${app.security.issuer:http://localhost:9090}")
+    private String issuerUrl;
+
+    // ========== CHAIN 1: OAuth 2.1 Authorization Server Endpoints ==========
     @Bean
     @Order(1)
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
-
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
                 OAuth2AuthorizationServerConfigurer.authorizationServer();
 
@@ -71,21 +79,14 @@ public class SecurityConfig {
         return http.build();
     }
 
-    // ========== CHAIN 2: Application Security + Custom API ==========
+    // ========== CHAIN 2: Application Security (Form Login + API Endpoints) ==========
     @Bean
     @Order(2)
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
-                .csrf(csrf -> csrf
-                        .ignoringRequestMatchers("/api/auth/**", "/oauth2/**")
-                )
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/auth/**", "/oauth2/**"))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(
-                                "/api/auth/login",
-                                "/api/auth/refresh",
-                                "/login",
-                                "/error"
-                        ).permitAll()
+                        .requestMatchers("/api/auth/login", "/api/auth/refresh", "/login", "/error").permitAll()
                         .anyRequest().authenticated()
                 )
                 .formLogin(form -> form
@@ -103,7 +104,7 @@ public class SecurityConfig {
     @Bean
     public AuthenticationManager authenticationManager() {
         DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
-        provider.setUserDetailsService(myUserDetailsService);
+        provider.setUserDetailsService(userDetailsService);
         provider.setPasswordEncoder(passwordEncoder());
         return new ProviderManager(provider);
     }
@@ -113,7 +114,7 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
-    // ========== JWT KEYS ==========
+    // ========== JWT KEY MANAGEMENT ==========
     @Bean
     public JWKSource<SecurityContext> jwkSource() {
         KeyPair keyPair = generateRsaKey();
@@ -140,33 +141,63 @@ public class SecurityConfig {
     }
 
     @Bean
-    public AuthorizationServerSettings authorizationServerSettings(@Value("${app.security.issuer:http://localhost:9090}") String issuerUrl) {
+    public AuthorizationServerSettings authorizationServerSettings() {
         return AuthorizationServerSettings.builder()
                 .issuer(issuerUrl)
                 .build();
     }
 
-    // ========== TOKEN GENERATOR (Used by both standard and internal flow) ==========
+    // ========== TOKEN GENERATOR ==========
     @Bean
     public OAuth2TokenGenerator<?> tokenGenerator(JwtEncoder jwtEncoder) {
         JwtGenerator jwtGenerator = new JwtGenerator(jwtEncoder);
         OAuth2AccessTokenGenerator accessTokenGenerator = new OAuth2AccessTokenGenerator();
         OAuth2RefreshTokenGenerator refreshTokenGenerator = new OAuth2RefreshTokenGenerator();
-
-        return new org.springframework.security.oauth2.server.authorization.token.DelegatingOAuth2TokenGenerator(
-                jwtGenerator,
-                accessTokenGenerator,
-                refreshTokenGenerator
-        );
+        return new DelegatingOAuth2TokenGenerator(jwtGenerator, accessTokenGenerator, refreshTokenGenerator);
     }
 
+    // ========== ✅ JWT CLAIMS CUSTOMIZER (Adds username, roles, user_id, etc.) ==========
+    @Bean
+    public OAuth2TokenCustomizer<JwtEncodingContext> jwtTokenCustomizer() {
+        return (context) -> {
+            // Only customize Access Tokens (skip Refresh/ID tokens)
+            if (!OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
+                return;
+            }
+
+            context.getClaims().claims(claims -> {
+                // Standard OAuth2 claims
+                claims.put("client_id", context.getRegisteredClient().getClientId());
+                claims.put("scope", context.getAuthorizedScopes());
+                claims.put("username", context.getPrincipal().getName());
+
+                // Roles (strip ROLE_ prefix for cleaner frontend usage)
+                List<String> roles = context.getPrincipal().getAuthorities().stream()
+                        .map(GrantedAuthority::getAuthority)
+                        .map(role -> role.startsWith("ROLE_") ? role.substring(5) : role)
+                        .collect(Collectors.toList());
+                claims.put("roles", roles);
+
+                // Custom User Details (if your principal implements your CustomUserDetails record)
+                // 👇 Adjust package path to match your CustomUserDetails location
+                if (context.getPrincipal().getPrincipal() instanceof CustomUserDetails customUser) {
+                    claims.put("user_id", customUser.id());
+                    claims.put("email", customUser.email());
+                    claims.put("tenant_id", customUser.tenantId());
+                    claims.put("is_active", customUser.isActive());
+                }
+            });
+        };
+    }
+
+    // ========== RSA KEY GENERATOR (2048-bit for dev/testing) ==========
     private static KeyPair generateRsaKey() {
         try {
             KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
             keyGen.initialize(2048);
             return keyGen.generateKeyPair();
         } catch (Exception ex) {
-            throw new IllegalStateException(ex);
+            throw new IllegalStateException("Failed to generate RSA key pair", ex);
         }
     }
 }
