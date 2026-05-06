@@ -27,7 +27,7 @@ logging:
 
 app:
   security:
-    issuer: http://localhost:8080
+    issuer: http://localhost:9090
     access-token:
       expiry: 30m
     refresh-token:

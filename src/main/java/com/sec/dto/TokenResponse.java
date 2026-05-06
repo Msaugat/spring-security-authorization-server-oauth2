@@ -20,4 +20,5 @@ public class TokenResponse {
     private Instant expiresAt;
     private String scope;
     private String username;
+    private String issuer;
 }
