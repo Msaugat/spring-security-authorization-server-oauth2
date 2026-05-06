@@ -1,6 +1,7 @@
 package com.sec.service;
 
 
+import com.sec.datainit.ClientConfig;
 import com.sec.dto.TokenResponse;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -79,7 +80,15 @@ public class InternalOAuth2TokenService {
         Set<String> authorizedScopes = parseScopes(scope, client.getScopes());
 
         // 4. Build OAuth2Authorization with AUTHORIZATION_CODE grant (PKCE-compatible)
-        OAuth2Authorization authorization = buildAuthorization(client, userAuthentication, authorizedScopes);
+        OAuth2Authorization authorization = OAuth2Authorization.withRegisteredClient(client)
+                .id(UUID.randomUUID().toString())
+                .principalName(userAuthentication.getName())
+                .authorizationGrantType(ClientConfig.INTERNAL_LOGIN_GRANT) //  Use custom grant
+                .authorizedScopes(authorizedScopes)
+                .attribute(Authentication.class.getName(), userAuthentication)
+                .attribute("internal_flow", true)
+                .attribute("pkce_challenge", codeChallenge) // Optional: for audit
+                .build();
 
         // 5. If PKCE challenge provided, generate authorization code with challenge binding (for future use)
         String authorizationCodeValue = null;
@@ -293,7 +302,7 @@ public class InternalOAuth2TokenService {
                 .authorization(authorization)
                 .authorizedScopes(authorizedScopes)
                 .tokenType(OAuth2TokenType.ACCESS_TOKEN)
-                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .authorizationGrantType(ClientConfig.INTERNAL_LOGIN_GRANT)
                 .build();
 
         OAuth2Token generated = tokenGenerator.generate(context);
@@ -320,7 +329,7 @@ public class InternalOAuth2TokenService {
                 .authorization(authorization)
                 .authorizedScopes(authorizedScopes)
                 .tokenType(OAuth2TokenType.REFRESH_TOKEN)
-                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN) // ✅ Standard for refresh
                 .build();
 
         OAuth2Token generated = tokenGenerator.generate(context);
