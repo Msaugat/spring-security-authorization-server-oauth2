@@ -8,30 +8,12 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class ApiResponse<T> {
-    private boolean success;
-    private String message;
-    private T data;
-    private Instant timestamp;
-
+public record ApiResponse<T>(boolean success, T data, String error) {
     public static <T> ApiResponse<T> success(T data) {
-        return ApiResponse.<T>builder()
-                .success(true)
-                .message("Success")
-                .data(data)
-                .timestamp(Instant.now())
-                .build();
+        return new ApiResponse<>(true, data, null);
     }
 
-    public static <T> ApiResponse<T> error(String message) {
-        return ApiResponse.<T>builder()
-                .success(false)
-                .message(message)
-                .timestamp(Instant.now())
-                .build();
+    public static <T> ApiResponse<T> error(String error) {
+        return new ApiResponse<>(false, null, error);
     }
 }
