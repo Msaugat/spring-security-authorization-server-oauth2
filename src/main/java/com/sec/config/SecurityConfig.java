@@ -5,6 +5,8 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.sec.security.CustomPasswordGrantAuthenticationConverter;
+import com.sec.security.CustomPasswordGrantAuthenticationProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,7 +19,9 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.OAuth2Token;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationConsentService;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
@@ -25,6 +29,10 @@ import org.springframework.security.oauth2.server.authorization.client.Registere
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
+import org.springframework.security.oauth2.server.authorization.token.*;
+import org.springframework.security.oauth2.server.authorization.web.authentication.DelegatingAuthenticationConverter;
+import org.springframework.security.oauth2.server.authorization.web.authentication.OAuth2ClientCredentialsAuthenticationConverter;
+import org.springframework.security.oauth2.server.authorization.web.authentication.OAuth2RefreshTokenAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
@@ -175,6 +183,22 @@ public class SecurityConfig {
     }
 
     @Bean
+    public CustomPasswordGrantAuthenticationProvider customPasswordGrantAuthenticationProvider(
+            AuthenticationManager authenticationManager,
+            OAuth2AuthorizationService authorizationService,
+            OAuth2AuthorizationConsentService consentService,
+            OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator) {
+
+        return new CustomPasswordGrantAuthenticationProvider(
+                authenticationManager,
+                authorizationService,
+                consentService,
+                tokenGenerator
+        );
+    }
+
+
+    @Bean
     public JWKSource<SecurityContext> jwkSource() {
         KeyPair keyPair = generateRsaKey();
         RSAPublicKey publicKey = (RSAPublicKey) keyPair.getPublic();
@@ -195,6 +219,26 @@ public class SecurityConfig {
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to generate RSA key pair", ex);
         }
+    }
+
+    @Bean
+    public DelegatingAuthenticationConverter authorizationServerAuthenticationConverters() {
+        return new DelegatingAuthenticationConverter(java.util.Arrays.asList(
+                new CustomPasswordGrantAuthenticationConverter(),      // Our custom password grant
+                new OAuth2RefreshTokenAuthenticationConverter(),       // Standard refresh grant
+                new OAuth2ClientCredentialsAuthenticationConverter()   // Client credentials
+        ));
+    }
+
+    @Bean
+    public OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator(JWKSource<SecurityContext> jwkSource) {
+        JwtEncoder jwtEncoder = new NimbusJwtEncoder(jwkSource);
+
+        return new DelegatingOAuth2TokenGenerator(
+                new JwtGenerator(jwtEncoder),           // Generates signed JWTs! 🎯
+                new OAuth2AccessTokenGenerator(),
+                new OAuth2RefreshTokenGenerator()
+        );
     }
 
     @Bean
