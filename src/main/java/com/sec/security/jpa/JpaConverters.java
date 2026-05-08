@@ -4,33 +4,52 @@ package com.sec.security.jpa;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.sec.entity.OAuth2AuthorizationConsentEntity;
 import com.sec.entity.OAuth2AuthorizationEntity;
 import com.sec.entity.RegisteredClientEntity;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.convert.converter.Converter;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.core.*;
-import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.core.endpoint.OAuth2ParameterNames;
 import org.springframework.security.oauth2.core.oidc.OidcIdToken;
-import org.springframework.security.oauth2.server.authorization.*;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
+import org.springframework.security.oauth2.server.authorization.OAuth2Authorization;
+import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationCode;
+import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationConsent;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
 import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
  * Utility class for converting between JPA entities and Spring Security OAuth2 objects.
  */
+
+/**
+ * Utility class for converting between JPA entities and Spring Security OAuth2 objects.
+ * Handles Duration serialization/deserialization properly with Jackson JSR310.
+ */
+@Slf4j
 public final class JpaConverters {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    /**
+     * Configured ObjectMapper with JSR310 module for Duration support
+     */
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule());
+
+    // Converter for ClientAuthenticationMethod
+    private static final Converter<String, ClientAuthenticationMethod> CLIENT_AUTH_METHOD_CONVERTER =
+            source -> new ClientAuthenticationMethod(source);
 
     private JpaConverters() {}
 
@@ -38,7 +57,7 @@ public final class JpaConverters {
 
     static String toJson(Object object) {
         try {
-            return OBJECT_MAPPER.writeValueAsString(object);
+            return MAPPER.writeValueAsString(object);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException(e.getMessage(), e);
         }
@@ -49,8 +68,9 @@ public final class JpaConverters {
             return null;
         }
         try {
-            return OBJECT_MAPPER.readValue(json, typeReference);
+            return MAPPER.readValue(json, typeReference);
         } catch (IOException e) {
+            log.error("Failed to parse JSON: {}", json.substring(0, Math.min(json.length(), 100)), e);
             throw new IllegalArgumentException(e.getMessage(), e);
         }
     }
@@ -98,19 +118,25 @@ public final class JpaConverters {
         Set<String> postLogoutRedirectUris = parseSet(entity.getPostLogoutRedirectUris());
         Set<String> scopes = parseSet(entity.getScopes());
 
-        Map<String, Object> clientSettingsMap = parseMap(entity.getClientSettings());
-        Map<String, Object> tokenSettingsMap = parseMap(entity.getTokenSettings());
+        // ✅ Parse settings safely
+        ClientSettings clientSettings = parseClientSettings(entity.getClientSettings());
+        TokenSettings tokenSettings = parseTokenSettings(entity.getTokenSettings());
 
-        ClientSettings clientSettings = ClientSettings.withSettings(clientSettingsMap).build();
-        TokenSettings tokenSettings = TokenSettings.withSettings(tokenSettingsMap).build();
+        log.debug("Building RegisteredClient:");
+        log.debug("  - ID: {}", entity.getId());
+        log.debug("  - ClientID: {}", entity.getClientId());
+        log.debug("  - Access Token TTL: {} seconds",
+                tokenSettings.getAccessTokenTimeToLive().getSeconds());
+        log.debug("  - Refresh Token TTL: {} seconds",
+                tokenSettings.getRefreshTokenTimeToLive().getSeconds());
 
-        RegisteredClient.Builder builder = RegisteredClient.withId(entity.getId())
+        return RegisteredClient.withId(entity.getId())
                 .clientId(entity.getClientId())
                 .clientSecret(entity.getClientSecret())
                 .clientName(entity.getClientName())
                 .clientAuthenticationMethods(methods ->
                         clientAuthenticationMethods.forEach(method ->
-                                methods.add(new ClientAuthenticationMethod(method))))
+                                methods.add(CLIENT_AUTH_METHOD_CONVERTER.convert(method))))
                 .authorizationGrantTypes(types ->
                         authorizationGrantTypes.forEach(type ->
                                 types.add(new AuthorizationGrantType(type))))
@@ -118,9 +144,126 @@ public final class JpaConverters {
                 .postLogoutRedirectUris(uris -> postLogoutRedirectUris.forEach(uri -> uris.add(uri)))
                 .scopes(s -> scopes.forEach(scope -> s.add(scope)))
                 .clientSettings(clientSettings)
-                .tokenSettings(tokenSettings);
+                .tokenSettings(tokenSettings)
+                .build();
+    }
 
-        return builder.build();
+    // ==================== SETTINGS PARSERS (Duration-safe) ====================
+
+    /**
+     * ✅ Parse TokenSettings with Duration handling
+     */
+    static TokenSettings parseTokenSettings(String json) {
+        if (!StringUtils.hasText(json)) {
+            return defaultTokenSettings();
+        }
+
+        try {
+            Map<String, Object> settings = parseMap(json);
+            TokenSettings.Builder builder = TokenSettings.builder();
+
+            // Access Token TTL - handle Duration or Number
+            if (settings.containsKey("access-token-time-to-live")) {
+                builder.accessTokenTimeToLive(parseDuration(settings.get("access-token-time-to-live")));
+            } else {
+                builder.accessTokenTimeToLive(Duration.ofMinutes(15));
+            }
+
+            // Refresh Token TTL
+            if (settings.containsKey("refresh-token-time-to-live")) {
+                builder.refreshTokenTimeToLive(parseDuration(settings.get("refresh-token-time-to-live")));
+            } else {
+                builder.refreshTokenTimeToLive(Duration.ofDays(30));
+            }
+
+            // Reuse refresh tokens
+            if (settings.containsKey("reuse-refresh-tokens")) {
+                builder.reuseRefreshTokens(Boolean.TRUE.equals(settings.get("reuse-refresh-tokens")));
+            }
+
+            // ID token signature algorithm
+            if (settings.containsKey("id-token-signature-algorithm")) {
+                String algo = settings.get("id-token-signature-algorithm").toString();
+                builder.idTokenSignatureAlgorithm(SignatureAlgorithm.from(algo));
+            }
+
+            return builder.build();
+
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to parse TokenSettings, using defaults: {}", e.getMessage());
+            return defaultTokenSettings();
+        }
+    }
+
+    /**
+     * ✅ Parse ClientSettings
+     */
+    static ClientSettings parseClientSettings(String json) {
+        if (!StringUtils.hasText(json)) {
+            return defaultClientSettings();
+        }
+
+        try {
+            Map<String, Object> settings = parseMap(json);
+            ClientSettings.Builder builder = ClientSettings.builder();
+
+            if (settings.containsKey("require-authorization-consent")) {
+                builder.requireAuthorizationConsent(Boolean.TRUE.equals(settings.get("require-authorization-consent")));
+            }
+
+            if (settings.containsKey("require-proof-key")) {
+                builder.requireProofKey(Boolean.TRUE.equals(settings.get("require-proof-key")));
+            }
+
+            return builder.build();
+
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to parse ClientSettings, using defaults: {}", e.getMessage());
+            return defaultClientSettings();
+        }
+    }
+
+    /**
+     * ✅ Smart Duration parser - handles both Duration objects and epoch seconds
+     */
+    private static Duration parseDuration(Object value) {
+        if (value instanceof Duration) {
+            return (Duration) value;
+        } else if (value instanceof Number) {
+            return Duration.ofSeconds(((Number) value).longValue());
+        } else if (value instanceof String) {
+            // Try ISO-8601 format first (e.g., "PT15M" or "PT30D")
+            try {
+                return Duration.parse((String) value);
+            } catch (Exception e) {
+                // Fallback: try as seconds number
+                try {
+                    return Duration.ofSeconds(Long.parseLong((String) value));
+                } catch (NumberFormatException ex) {
+                    log.warn("Cannot parse duration from string: {}", value);
+                    return Duration.ofMinutes(15); // Default fallback
+                }
+            }
+        } else {
+            log.warn("Unknown duration type: {} ({})", value.getClass(), value);
+            return Duration.ofMinutes(15); // Safe default
+        }
+    }
+
+    private static TokenSettings defaultTokenSettings() {
+        return TokenSettings.builder()
+                .accessTokenTimeToLive(Duration.ofMinutes(15))
+                .refreshTokenTimeToLive(Duration.ofDays(30))
+                .reuseRefreshTokens(false)
+                .idTokenSignatureAlgorithm(SignatureAlgorithm.RS256)
+                .build();
+    }
+
+    private static ClientSettings defaultClientSettings() {
+        return ClientSettings.builder()
+                .requireAuthorizationConsent(false)
+                .requireProofKey(false)
+                .build();
     }
 
     // ==================== AUTHORIZATION ====================
@@ -260,7 +403,7 @@ public final class JpaConverters {
         return builder.build();
     }
 
-    // ==================== HELPER METHODS ====================
+    // ==================== HELPERS ====================
 
     private static <T extends OAuth2Token> String writeAsJson(OAuth2Authorization.Token<T> token) {
         Map<String, Object> data = new HashMap<>();

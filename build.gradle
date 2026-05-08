@@ -23,6 +23,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.security:spring-security-oauth2-authorization-server:1.4.0'
 	implementation 'com.nimbusds:nimbus-jose-jwt:9.37.3'
+	implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
 	runtimeOnly 'org.postgresql:postgresql'
 	compileOnly 'org.projectlombok:lombok'
 	annotationProcessor 'org.projectlombok:lombok'
