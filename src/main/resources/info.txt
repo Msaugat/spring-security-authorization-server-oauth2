@@ -1,0 +1,27 @@
+curl -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"john","email":"john@example.com","password":"password123"}'
+
+
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"john","password":"password123"}'
+
+curl -X POST http://localhost:8080/api/auth/refresh-token \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"your-refresh-token-here"}'
+
+
+  curl http://localhost:8080/api/user/profile \
+    -H "Authorization: Bearer your-access-token-here"
+
+
+
+
+//to generate public key or a private key user this
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private.pem
+openssl rsa -pubout -in private.pem -out public.pem
+cat private.pem > src/main/resources/jwt.pem
+echo "" >> src/main/resources/jwt.pem
+cat public.pem >> src/main/resources/jwt.pem
