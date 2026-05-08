@@ -1,5 +1,5 @@
 server:
-  port: 9090
+  port: 8080
 
 spring:
   application:
@@ -14,21 +14,23 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
         dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  security:
+    oauth2:
+      authorizationserver:
+        issuer: http://localhost:8080
 
 logging:
   level:
     org.springframework.security: DEBUG
-    org.springframework.security.oauth2: DEBUG
 
 app:
   security:
-    issuer: http://localhost:9090
-    access-token:
-      expiry: 30m
-    refresh-token:
-      expiry: 7d
+    jwt:
+      key-id: auth-key
+      key-pair:
+        location: classpath:jwt.pem
