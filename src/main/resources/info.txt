@@ -1,3 +1,12 @@
+
+
+curl -X POST http://localhost:8080/oauth2/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password&client_id=react-spa-client&client_secret=secret&username=john&password=password123"
+
+
+
+
 curl -X POST http://localhost:8080/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"john","email":"john@example.com","password":"password123"}'

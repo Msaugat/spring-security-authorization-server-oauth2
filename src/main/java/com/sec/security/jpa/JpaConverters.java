@@ -118,7 +118,7 @@ public final class JpaConverters {
         Set<String> postLogoutRedirectUris = parseSet(entity.getPostLogoutRedirectUris());
         Set<String> scopes = parseSet(entity.getScopes());
 
-        // ✅ Parse settings safely
+        // Parse settings safely
         ClientSettings clientSettings = parseClientSettings(entity.getClientSettings());
         TokenSettings tokenSettings = parseTokenSettings(entity.getTokenSettings());
 
@@ -151,7 +151,7 @@ public final class JpaConverters {
     // ==================== SETTINGS PARSERS (Duration-safe) ====================
 
     /**
-     * ✅ Parse TokenSettings with Duration handling
+     *  Parse TokenSettings with Duration handling
      */
     static TokenSettings parseTokenSettings(String json) {
         if (!StringUtils.hasText(json)) {
@@ -190,13 +190,13 @@ public final class JpaConverters {
             return builder.build();
 
         } catch (Exception e) {
-            log.warn("⚠️ Failed to parse TokenSettings, using defaults: {}", e.getMessage());
+            log.warn("Failed to parse TokenSettings, using defaults: {}", e.getMessage());
             return defaultTokenSettings();
         }
     }
 
     /**
-     * ✅ Parse ClientSettings
+     *  Parse ClientSettings
      */
     static ClientSettings parseClientSettings(String json) {
         if (!StringUtils.hasText(json)) {
@@ -224,7 +224,7 @@ public final class JpaConverters {
     }
 
     /**
-     * ✅ Smart Duration parser - handles both Duration objects and epoch seconds
+     * Smart Duration parser - handles both Duration objects and epoch seconds
      */
     private static Duration parseDuration(Object value) {
         if (value instanceof Duration) {
